@@ -1,0 +1,11 @@
+flask
+streamlit
+spacy
+fr_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.1.0/fr_core_news_sm-3.1.0.tar.gz
+docx2txt
+PyPDF2
+python-docx
+reportlab
+requests
+transformers
+torch
