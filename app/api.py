@@ -123,41 +123,45 @@ def download():
         data = request.get_json()
         text = data.get('text', '')
         file_format = data.get('format', 'pdf').lower()
-        language = data.get('language', DEFAULT_LANGUAGE).lower()
+        language = data.get('language', 'en')
 
-        if not text:
-            return jsonify({'error': 'No text provided'}), HTTPStatus.BAD_REQUEST
+        # Normalize text
+        if isinstance(text, list):
+            text = " ".join(map(str, text))
+        elif not isinstance(text, str):
+            return jsonify({'error': 'Invalid input text format. Must be string or list.'}), 400
 
-        if language not in SUPPORTED_LANGUAGES:
-            return jsonify({'error': f'Unsupported language. Supported languages: {", ".join(SUPPORTED_LANGUAGES)}'}), HTTPStatus.BAD_REQUEST
+        if not text.strip():
+            return jsonify({'error': 'Input text is empty.'}), 400
 
+        # Generate file based on format
         if file_format == 'pdf':
             file_content = save_as_pdf(text)
-            if file_content is None:
-                raise FileProcessingError("Failed to generate PDF")
-            mimetype = 'application/pdf'
+            mime_type = 'application/pdf'
             file_name = f'summary_{language}.pdf'
         elif file_format == 'word':
             file_content = save_as_word(text)
-            if file_content is None:
-                raise FileProcessingError("Failed to generate Word file")
-            mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             file_name = f'summary_{language}.docx'
         else:
-            return jsonify({'error': 'Invalid file format. Use "pdf" or "word"'}), HTTPStatus.BAD_REQUEST
+            return jsonify({'error': 'Unsupported file format. Use pdf or word.'}), 400
+
+        if not file_content:
+            raise FileProcessingError("Failed to generate file")
 
         return send_file(
             file_content,
-            mimetype=mimetype,
+            mimetype=mime_type,
             as_attachment=True,
             download_name=file_name
         )
     except FileProcessingError as fe:
         logging.error(f"File processing error: {str(fe)}")
-        return jsonify({'error': str(fe)}), HTTPStatus.BAD_REQUEST
+        return jsonify({'error': str(fe)}), 400
     except Exception as e:
         logging.error(f"Unexpected error during download: {str(e)}", exc_info=True)
-        return jsonify({'error': 'Internal server error occurred'}), HTTPStatus.INTERNAL_SERVER_ERROR
+        return jsonify({'error': 'Internal server error occurred'}), 500
+
 
 
 

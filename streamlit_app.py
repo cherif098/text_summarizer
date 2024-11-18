@@ -80,21 +80,36 @@ def get_summary(text, num_sentences, language, session):
 
 def download_file(summary, format_type, language, session):
     try:
+        if isinstance(summary, list):
+            summary_text = " ".join(map(str, summary))  # Convert list to string
+        elif isinstance(summary, str):
+            summary_text = summary
+        else:
+            raise ValueError("Summary must be a string or a list.")
+
         response = session.post(
             f"{API_BASE_URL}/download",
-            json={"text": summary, "format": format_type.lower(), "language": language},
+            json={
+                "text": summary_text,
+                "format": format_type.lower(),
+                "language": language
+            },
             timeout=60,
             stream=True
         )
         response.raise_for_status()
-        
+
         extension = 'pdf' if format_type.lower() == 'pdf' else 'docx'
-        mime_type = 'application/pdf' if extension == 'pdf' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        
+        mime_type = {
+            'pdf': 'application/pdf',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        }[extension]
+
         return response.content, f"resume_{language}.{extension}", mime_type
     except Exception as e:
         st.error(f"Erreur lors du téléchargement: {str(e)}")
         return None, None, None
+
 
 def display_summary(summary, lang):
     st.markdown(f"""

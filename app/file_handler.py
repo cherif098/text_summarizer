@@ -51,37 +51,43 @@ def read_pdf(file):
 
 def save_as_word(text):
     try:
+        if not text.strip():
+            raise ValueError("The input text is empty.")
         output = BytesIO()
         doc = Document()
         doc.add_paragraph(text)
         doc.save(output)
-        output.seek(0)  # Reset pointer to start of the stream
+        output.seek(0)
         return output
     except Exception as e:
-        print(f"Error saving Word file: {e}")
+        logging.error(f"Error saving Word file: {e}")
         return None
-
 
 def save_as_pdf(text):
     """
     Save text as a PDF, handling line wrapping, and return the PDF as a BytesIO object.
     """
     try:
+        if isinstance(text, list):
+            text = " ".join(map(str, text))  # Convert list to a single string
+        elif not isinstance(text, str):
+            raise ValueError("The input text must be a string or a list of strings.")
+        if not text.strip():
+            raise ValueError("The input text is empty.")
+
         output = BytesIO()
         c = canvas.Canvas(output, pagesize=letter)
         width, height = letter
 
-        # Set font
+        # Set font and margins
         c.setFont("Helvetica", 12)
-        
-        # Margin setup
-        x_margin = 72
-        y_margin = height - 72  # Start from the top margin
-        line_height = 14  # Space between lines
-        
-        # Wrap text to fit within the page width
+        x_margin, y_margin = 72, height - 72
+        line_height = 14
         max_width = width - 2 * x_margin
-        wrapped_text = wrap(text, width=int(max_width / 7))  # Approx. 7 points per character
+
+        # Wrap text to fit within the page width
+        from textwrap import wrap  # Ensure the correct import is present
+        wrapped_text = wrap(text, width=int(max_width / 7))
 
         # Draw each line
         for line in wrapped_text:
@@ -97,5 +103,5 @@ def save_as_pdf(text):
         output.seek(0)
         return output
     except Exception as e:
-        print(f"Error creating PDF: {e}")
+        logging.error(f"Error creating PDF file: {e}")
         return None
