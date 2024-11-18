@@ -1,6 +1,5 @@
 from flask import Blueprint, request, jsonify, send_file, current_app
 from requests import Response
-from .summarizer import summarize_text
 from .file_handler import read_word, read_pdf, save_as_word, save_as_pdf
 import io
 import os
@@ -8,38 +7,34 @@ import logging
 from http import HTTPStatus
 from pathlib import Path
 from werkzeug.utils import secure_filename
+from .summarizer import MultilingualSummarizer
+import logging
+
+
+# Define the custom exception class
+class FileProcessingError(Exception):
+    """Custom exception for file processing errors."""
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+
 
 api_bp = Blueprint('api', __name__)
 
 # Constants
 DEFAULT_NUM_SENTENCES = 3
-MAX_NUM_SENTENCES = 10  #  safety limit
-MIN_TEXT_LENGTH = 10    #  minimum text length requirement
+MAX_NUM_SENTENCES = 10  # safety limit
+MIN_TEXT_LENGTH = 10    # minimum text length requirement
 ALLOWED_EXTENSIONS = {'pdf', 'docx'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit
 UPLOAD_FOLDER = 'temp_uploads'
+SUPPORTED_LANGUAGES = {'fr', 'en'}  # Add supported languages here
+DEFAULT_LANGUAGE = 'fr'  # Default to French
+
 
 @api_bp.route('/summarize', methods=['POST'])
 def summarize():
-    """
-    Summarizes the provided text into a specified number of sentences.
-    
-    Expected JSON payload:
-    {
-        "text": "Text to summarize...",
-        "num_sentences": 3  # Optional, defaults to DEFAULT_NUM_SENTENCES
-    }
-    
-    Returns:
-    {
-        "summary": "Summarized text..."
-    }
-    
-    or in case of error:
-    {
-        "error": "Error message..."
-    }
-    """
+
     try:
         data = request.get_json()
         if not data:
@@ -59,11 +54,22 @@ def summarize():
                 'error': f'num_sentences must be an integer between 1 and {MAX_NUM_SENTENCES}'
             }), HTTPStatus.BAD_REQUEST
         
-        # Generate summary
-        summary = summarize_text(text.strip(), num_sentences)
+        # Validate and process language
+        language = data.get('language', DEFAULT_LANGUAGE).lower()
+        if language not in SUPPORTED_LANGUAGES:
+            return jsonify({
+                'error': f'Unsupported language. Supported languages: {", ".join(SUPPORTED_LANGUAGES)}'
+            }), HTTPStatus.BAD_REQUEST
         
-        logging.info(f"Successfully generated summary of {len(text)} chars into {num_sentences} sentences")
-        return jsonify({'summary': summary}), HTTPStatus.OK
+        # Generate summary
+        summarizer = MultilingualSummarizer()
+        summary = summarizer.summarize_text(text.strip(), num_sentences, language)
+
+        logging.info(f"Successfully generated {language} summary of {len(text)} chars into {num_sentences} sentences")
+        return jsonify({
+            'summary': summary,
+            'language': language
+        }), HTTPStatus.OK
         
     except ValueError as ve:
         logging.warning(f"Validation error: {str(ve)}")
@@ -73,66 +79,11 @@ def summarize():
         logging.error(f"Error generating summary: {str(e)}", exc_info=True)
         return jsonify({'error': 'Internal server error occurred'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
-
-class FileProcessingError(Exception):
-    """Custom exception for file processing errors"""
-    pass
-
-def allowed_file(filename):
-    """
-    Validate file extension and security
-    Returns: bool
-    """
-    if not filename or '.' not in filename:
-        return False
-    ext = filename.rsplit('.', 1)[1].lower()
-    return ext in ALLOWED_EXTENSIONS
-
-def validate_file_size(file):
-    """
-    Validate file size
-    Returns: bool
-    """
-    file.seek(0, os.SEEK_END)
-    size = file.tell()
-    file.seek(0)  # Reset file pointer
-    return size <= MAX_FILE_SIZE
-
-def save_file_safely(file):
-    """
-    Safely save file to temporary location
-    Returns: Path to saved file
-    """
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-        
-    filename = secure_filename(file.filename)
-    temp_path = Path(UPLOAD_FOLDER) / filename
-    file.save(temp_path)
-    return temp_path
-
 @api_bp.route('/upload', methods=['POST'])
 def upload_file():
-    """
-    Uploads a file and extracts text from it.
-    
-    Accepts:
-    - Multipart form data with 'file' field
-    - Supported formats: PDF, DOCX
-    - Maximum file size: 10MB
-    
-    Returns:
-    {
-        "text": "Extracted text..."
-    }
-    
-    or in case of error:
-    {
-        "error": "Error message..."
-    }
-    """
+
     try:
-        # Validate file presence
+        # Vérification de la présence du fichier
         if 'file' not in request.files:
             return jsonify({'error': 'No file part in the request'}), HTTPStatus.BAD_REQUEST
         
@@ -140,76 +91,91 @@ def upload_file():
         if not file or file.filename == '':
             return jsonify({'error': 'No file selected'}), HTTPStatus.BAD_REQUEST
         
-        # Validate file type
-        if not allowed_file(file.filename):
-            return jsonify({
-                'error': f'Unsupported file format. Allowed formats: {", ".join(ALLOWED_EXTENSIONS)}'
-            }), HTTPStatus.BAD_REQUEST
+        # Vérification du type de fichier (si c'est bien un .docx)
+        if not file.filename.endswith('.docx'):
+            return jsonify({'error': 'Invalid file type. Only .docx files are supported.'}), HTTPStatus.BAD_REQUEST
         
-        # Validate file size
-        if not validate_file_size(file):
-            return jsonify({
-                'error': f'File too large. Maximum size: {MAX_FILE_SIZE/1024/1024}MB'
-            }), HTTPStatus.BAD_REQUEST
+        # Taille du fichier (max 10MB par exemple)
+        if len(file.read()) > MAX_FILE_SIZE:
+            return jsonify({'error': 'File size is too large.'}), HTTPStatus.BAD_REQUEST
         
-        # Save file safely
-        temp_path = save_file_safely(file)
+        # Revenir au début du fichier après la lecture de sa taille
+        file.seek(0)
         
-        try:
-            # Process file based on extension
-            if file.filename.endswith('.docx'):
-                text = read_word(temp_path)
-            elif file.filename.endswith('.pdf'):
-                text = read_pdf(temp_path)
-            else:
-                raise FileProcessingError("Unsupported file format")
-                
-            logging.info(f"Successfully processed file: {file.filename}")
-            return jsonify({'text': text}), HTTPStatus.OK
-            
-        finally:
-            # Clean temporary file
-            if temp_path.exists():
-                temp_path.unlink()
-                
-    except FileProcessingError as fe:
-        logging.error(f"File processing error: {str(fe)}")
-        return jsonify({'error': str(fe)}), HTTPStatus.BAD_REQUEST
+        # Traitement du fichier (lecture du texte du fichier DOCX)
+        text = read_word(file)
         
+        # Retourner le texte extrait et la langue (facultatif)
+        language = request.form.get('language', DEFAULT_LANGUAGE).lower()
+        
+        logging.info(f"Successfully processed file: {file.filename} in {language}")
+        return jsonify({'text': text, 'language': language}), HTTPStatus.OK
+
     except Exception as e:
-        logging.error(f"Unexpected error processing file: {str(e)}", exc_info=True)
+        logging.error(f"Unexpected error: {str(e)}", exc_info=True)
         return jsonify({'error': 'Internal server error occurred'}), HTTPStatus.INTERNAL_SERVER_ERROR
+    
+
 
 @api_bp.route('/download', methods=['POST'])
 def download():
-    """Generates a summary and allows the user to download it in the specified format."""
-    data = request.get_json()
-    text = data.get('text', '')
-    file_format = data.get('format', 'pdf').lower()
-
-    if not text:
-        return jsonify({'error': 'No text provided'}), 400
-
     try:
+        data = request.get_json()
+        text = data.get('text', '')
+        file_format = data.get('format', 'pdf').lower()
+        language = data.get('language', DEFAULT_LANGUAGE).lower()
+
+        if not text:
+            return jsonify({'error': 'No text provided'}), HTTPStatus.BAD_REQUEST
+
+        if language not in SUPPORTED_LANGUAGES:
+            return jsonify({'error': f'Unsupported language. Supported languages: {", ".join(SUPPORTED_LANGUAGES)}'}), HTTPStatus.BAD_REQUEST
+
         if file_format == 'pdf':
-            file_content = save_as_pdf(text)  # Get the BytesIO object
+            file_content = save_as_pdf(text)
+            if file_content is None:
+                raise FileProcessingError("Failed to generate PDF")
             mimetype = 'application/pdf'
-            file_name = 'resume.pdf'
+            file_name = f'summary_{language}.pdf'
         elif file_format == 'word':
-            file_content = save_as_word(text)  # Get the BytesIO object
+            file_content = save_as_word(text)
+            if file_content is None:
+                raise FileProcessingError("Failed to generate Word file")
             mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            file_name = 'resume.docx'
+            file_name = f'summary_{language}.docx'
         else:
-            return jsonify({'error': 'Unsupported file format'}), 400
+            return jsonify({'error': 'Invalid file format. Use "pdf" or "word"'}), HTTPStatus.BAD_REQUEST
 
-        # Use send_file to send the file content
         return send_file(
-            file_content,  # Pass the BytesIO object 
-            as_attachment=True,  # Force download
-            download_name=file_name,  # Specify the filename
-            mimetype=mimetype  # Set the mime type
+            file_content,
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=file_name
         )
-
+    except FileProcessingError as fe:
+        logging.error(f"File processing error: {str(fe)}")
+        return jsonify({'error': str(fe)}), HTTPStatus.BAD_REQUEST
     except Exception as e:
-        logging.error(f"Error generating file: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        logging.error(f"Unexpected error during download: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Internal server error occurred'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+
+def allowed_file(filename):
+    """Check if the file has a valid extension."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def validate_file_size(file):
+    """Check if the file exceeds the maximum allowed size."""
+    # Reset file pointer after checking the size
+    file.seek(0, os.SEEK_END)
+    return file.tell() <= MAX_FILE_SIZE
+
+def save_file_safely(file):
+    """Save file safely to a temporary location."""
+    temp_filename = secure_filename(file.filename)
+    temp_path = Path(UPLOAD_FOLDER) / temp_filename
+    if not temp_path.parent.exists():
+        os.makedirs(temp_path.parent)
+    file.save(temp_path)
+    return temp_path
